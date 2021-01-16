@@ -11,6 +11,7 @@ import (
 
 	"github.com/alextanhongpin/go-chat.v2/chat"
 	"github.com/alextanhongpin/go-chat.v2/domain"
+	"github.com/alextanhongpin/go-chat.v2/pkg/broker"
 	"github.com/alextanhongpin/go-chat.v2/pkg/ticket"
 	"github.com/julienschmidt/httprouter"
 )
@@ -26,6 +27,7 @@ func main() {
 	// websocket connection.
 	// For simplicity, we use the same for both.
 	issuer := ticket.New([]byte("secret :)"), 24*time.Hour)
+	pubsub := broker.New()
 
 	router := httprouter.New()
 	router.NotFound = http.FileServer(http.Dir("public"))
@@ -33,7 +35,7 @@ func main() {
 	router.POST("/authenticate", newHandleAuthenticate(issuer))
 	router.POST("/authorize", authorize(issuer, handleAuthorize))
 
-	c := chat.New(issuer)
+	c := chat.New(issuer, pubsub)
 	router.GET("/ws", func(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
 		c.ServeWs(w, r)
 	})

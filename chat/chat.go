@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/alextanhongpin/go-chat.v2/pkg/broker"
 	"github.com/alextanhongpin/go-chat.v2/pkg/ticket"
 	"github.com/gorilla/websocket"
 )
@@ -35,11 +36,13 @@ type Command struct {
 }
 
 type Chat struct {
+	pubsub broker.Engine
 	issuer ticket.Issuer
 }
 
-func New(issuer ticket.Issuer) *Chat {
+func New(issuer ticket.Issuer, pubsub broker.Engine) *Chat {
 	return &Chat{
+		pubsub: pubsub,
 		issuer: issuer,
 	}
 }
@@ -68,8 +71,10 @@ func (c *Chat) ServeWs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Println("connected:", user)
+	// Create a new user channel.
+	ch := make(chan interface{})
+	c.pubsub.Subscribe(user, ch)
 
-	ch := make(chan Command)
 	var wg sync.WaitGroup
 	wg.Add(1)
 
@@ -82,13 +87,14 @@ func (c *Chat) ServeWs(w http.ResponseWriter, r *http.Request) {
 		write(ws, ch)
 	}()
 
-	read(ws, ch)
+	read(ws, user, c.pubsub)
 
 	close(ch)
+	c.pubsub.Unsubscribe(user, ch)
 	wg.Wait()
 }
 
-func read(ws *websocket.Conn, ch chan Command) {
+func read(ws *websocket.Conn, user string, pubsub broker.Engine) {
 	defer ws.Close()
 
 	ws.SetReadLimit(maxMessageSize)
@@ -106,12 +112,12 @@ func read(ws *websocket.Conn, ch chan Command) {
 			}
 			break
 		}
-		ch <- cmd
 		fmt.Println("got msg", cmd)
+		pubsub.Publish(user, cmd)
 	}
 }
 
-func write(ws *websocket.Conn, ch chan Command) {
+func write(ws *websocket.Conn, ch chan interface{}) {
 	defer ws.Close()
 
 	t := time.NewTicker(pingPeriod)
