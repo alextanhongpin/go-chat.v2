@@ -1,4 +1,3 @@
-import connect from "./socket.js";
 import Service from "./service.js";
 
 const $ = el => document.getElementById(el);
