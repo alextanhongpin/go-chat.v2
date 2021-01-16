@@ -63,7 +63,6 @@ func (b *Broker) Unsubscribe(topic string, ch Subscriber) {
 	}
 
 	b.rw.Lock()
-	close(ch)
 	delete(b.topics[topic], ch)
 	if len(b.topics[topic]) == 0 {
 		delete(b.topics, topic)
