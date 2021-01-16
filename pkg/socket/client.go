@@ -11,28 +11,26 @@ import (
 )
 
 type Client struct {
-	id uuid.UUID
+	ID string
 	ch chan interface{}
-	ws *websocket.Conn
 	eventbus.Engine
 }
 
-func NewClient(id uuid.UUID, ch chan interface{}, ws *websocket.Conn) *Client {
+func NewClient() *Client {
 	return &Client{
-		id:     id,
-		ch:     ch,
-		ws:     ws,
+		ID:     uuid.New().String(),
+		ch:     make(chan interface{}),
 		Engine: eventbus.New(),
 	}
 }
 
-func (c *Client) ServeWS() {
-	ws := c.ws
-
+func (c *Client) ServeWS(ws *websocket.Conn) {
 	var wg sync.WaitGroup
 	wg.Add(1)
+
 	go func() {
 		defer wg.Done()
+
 		c.write(ws)
 	}()
 	c.read(ws)
@@ -89,7 +87,7 @@ func (c *Client) write(ws *websocket.Conn) {
 
 			ws.SetWriteDeadline(time.Now().Add(writeWait))
 			if err := ws.WriteJSON(msg); err != nil {
-				// Unregister.
+				log.Printf("writeJSONErr: %s\n", err)
 				return
 			}
 
