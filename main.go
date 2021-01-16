@@ -28,10 +28,9 @@ func main() {
 	issuer := ticket.New([]byte("secret :)"), 24*time.Hour)
 
 	router := httprouter.New()
-	router.NotFound = http.FileServer(http.Dir("public"))
-
 	router.POST("/authenticate", newHandleAuthenticate(issuer))
 	router.POST("/authorize", authorize(issuer, handleAuthorize))
+	router.NotFound = http.FileServer(http.Dir("public"))
 
 	skt := socket.NewSocket(issuer)
 
