@@ -12,7 +12,6 @@ export async function authenticate(username) {
 
 export async function authorize() {
   const accessToken = window.localStorage.accessToken;
-  console.log("autho", accessToken);
   if (!accessToken) {
     throw new Error("accessToken is required");
   }

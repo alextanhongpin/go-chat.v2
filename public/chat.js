@@ -22,8 +22,8 @@ async function onload() {
   socket.onclose = onClose;
   socket.onmessage = onMessage;
 
-  function send(json) {
-    socket.send(JSON.stringify(json));
+  function send(type, payload) {
+    socket.send(JSON.stringify({ type, payload }));
   }
 
   function onClose(evt) {
@@ -32,8 +32,35 @@ async function onload() {
 
   function onMessage(evt) {
     const event = JSON.parse(evt.data);
+    eventProcessor(event);
+  }
+
+  const eventHandlers = {
+    presence_notified: presenceNotified,
+    message_sent: messageSent
+  };
+
+  function messageSent(payload) {
     $("output").innerText += "\n";
-    $("output").innerText += event.msg;
+    $("output").innerText += payload.msg;
+  }
+
+  function presenceNotified(payload) {
+    $("aside").innerHTML = payload
+      .map(({ username, online }) => {
+        return `<div>${username} ${online ? "online" : "offline"}</div>`;
+      })
+      .join("\n");
+
+    console.log("presenceNotified", payload);
+  }
+
+  function eventProcessor(event) {
+    const handler = eventHandlers[event.type];
+    if (!handler) {
+      throw new Error(`not implemented: ${event.type}`);
+    }
+    return handler(event.payload);
   }
 
   $("chat").addEventListener(
@@ -42,7 +69,7 @@ async function onload() {
       const isEnter = evt.which === 13;
       const message = $("chat").value;
       if (isEnter && message) {
-        send({ msg: message });
+        send("send_message", { msg: message });
         $("chat").value = "";
       }
     },
@@ -54,7 +81,7 @@ async function onload() {
     () => {
       const message = $("chat").value;
       if (message) {
-        send({ msg: message });
+        send("send_message", { msg: message });
         $("chat").value = "";
       }
     },
