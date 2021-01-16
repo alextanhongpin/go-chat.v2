@@ -5,10 +5,11 @@ import (
 )
 
 type Engine interface {
-	Subscribe(topic string, ch Subscriber)
+	Subscribe(topic string) Subscriber
 	Unsubscribe(topic string, ch Subscriber)
 	Publish(topic string, msg interface{})
 	Broadcast(msg interface{})
+	HasTopic(topic string) bool
 }
 
 type Subscriber chan interface{}
@@ -28,7 +29,7 @@ func New() *Broker {
 	}
 }
 
-func (b *Broker) hasTopic(name string) bool {
+func (b *Broker) HasTopic(name string) bool {
 	b.rw.RLock()
 	_, exists := b.topics[name]
 	b.rw.RUnlock()
@@ -36,7 +37,7 @@ func (b *Broker) hasTopic(name string) bool {
 }
 
 func (b *Broker) createTopic(name string) {
-	if b.hasTopic(name) {
+	if b.HasTopic(name) {
 		return
 	}
 
@@ -45,20 +46,24 @@ func (b *Broker) createTopic(name string) {
 	b.rw.Unlock()
 }
 
-func (b *Broker) Subscribe(topic string, ch Subscriber) {
+func (b *Broker) Subscribe(topic string) Subscriber {
 	b.createTopic(topic)
 
 	b.rw.Lock()
+	ch := make(chan interface{})
 	b.topics[topic][ch] = struct{}{}
 	b.rw.Unlock()
+
+	return ch
 }
 
 func (b *Broker) Unsubscribe(topic string, ch Subscriber) {
-	if !b.hasTopic(topic) {
+	if !b.HasTopic(topic) {
 		return
 	}
 
 	b.rw.Lock()
+	close(ch)
 	delete(b.topics[topic], ch)
 	if len(b.topics[topic]) == 0 {
 		delete(b.topics, topic)
@@ -67,7 +72,7 @@ func (b *Broker) Unsubscribe(topic string, ch Subscriber) {
 }
 
 func (b *Broker) Publish(topic string, msg interface{}) {
-	if !b.hasTopic(topic) {
+	if !b.HasTopic(topic) {
 		return
 	}
 
