@@ -7,7 +7,6 @@ import (
 	"log"
 	"net/http"
 	"sync"
-	"time"
 
 	"github.com/alextanhongpin/go-chat.v2/pkg/ticket"
 	"github.com/go-redis/redis/v8"
@@ -51,11 +50,7 @@ func (s *Socket) subscribe() {
 				log.Printf("unmarshalErr: %s\n", err)
 				continue
 			}
-			to, ok := m.Payload["to"].(string)
-			if !ok {
-				continue
-			}
-			socketIDs, err := s.RoomMembers(to)
+			socketIDs, err := s.RoomMembers(m.To)
 			if err != nil {
 				log.Printf("RoomMembersErr: %s\n", err)
 				continue
@@ -108,7 +103,7 @@ func (s *Socket) ServeWS(w http.ResponseWriter, r *http.Request) {
 	user, err := s.authorize(r)
 	if err != nil {
 		ws.WriteMessage(websocket.CloseMessage,
-			websocket.FormatCloseMessage(websocket.CloseNormalClosure, fmt.Sprintf("unauthorized: %s", err.Error())))
+			websocket.FormatCloseMessage(websocket.ClosePolicyViolation, fmt.Sprintf("unauthorized: %s", err.Error())))
 		return
 	}
 
@@ -125,15 +120,13 @@ func (s *Socket) ServeWS(w http.ResponseWriter, r *http.Request) {
 		log.Printf("friendStatusErr: %s\n", err)
 	}
 	s.NotifyPresence(user, true)
+	defer s.NotifyPresence(user, s.CheckOnline(user))
 
-	client.On("send_message", func(in map[string]interface{}) error {
-		in["from"] = user
-		in["to"] = user
-		in["createdAt"] = time.Now()
-		msg := Message{
-			Type:    "message_sent",
-			Payload: in,
-		}
+	client.On("send_message", func(i interface{}) error {
+		msg := i.(Message)
+		msg.From = user
+		msg.To = user
+		msg.Type = "message_sent"
 		return s.PublishRemote(context.Background(), msg)
 		// Write to own socket.
 		//client.Write(Message{
@@ -153,7 +146,6 @@ func (s *Socket) ServeWS(w http.ResponseWriter, r *http.Request) {
 	log.Println("connected:", client.ID)
 	client.ServeWS(ws)
 	log.Println("disconnected:", client.ID)
-	s.NotifyPresence(user, false)
 }
 
 type FriendStatus struct {
@@ -175,8 +167,9 @@ func (s *Socket) FetchFriendsStatus(user string) error {
 
 	msg := Message{
 		Type: "friends_fetched",
+		To:   user,
+		From: user,
 		Payload: map[string]interface{}{
-			"to":      user,
 			"friends": friendsStatus,
 		},
 	}
@@ -193,8 +186,9 @@ func (s *Socket) NotifyPresence(user string, online bool) {
 
 		msg := Message{
 			Type: "presence_notified",
+			To:   friend,
+			From: user,
 			Payload: map[string]interface{}{
-				"to":       friend,
 				"username": user,
 				"online":   online,
 			},

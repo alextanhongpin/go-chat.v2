@@ -6,10 +6,10 @@ import (
 
 type Engine interface {
 	On(event string, fn EventHandler)
-	Emit(event string, in map[string]interface{}) error
+	Emit(event string, in interface{}) error
 }
 
-type EventHandler func(map[string]interface{}) error
+type EventHandler func(interface{}) error
 
 type EventBus struct {
 	rw       sync.RWMutex
@@ -34,7 +34,7 @@ func (e *EventBus) On(event string, fn EventHandler) {
 	e.rw.Unlock()
 }
 
-func (e *EventBus) Emit(event string, i map[string]interface{}) error {
+func (e *EventBus) Emit(event string, i interface{}) error {
 	e.rw.RLock()
 	defer e.rw.RUnlock()
 

@@ -74,7 +74,7 @@ func (c *Client) read(ws *websocket.Conn) {
 			break
 		}
 
-		if err := c.Emit(msg.Type, msg.Payload); err != nil {
+		if err := c.Emit(msg.Type, msg); err != nil {
 			ws.WriteMessage(websocket.CloseMessage,
 				websocket.FormatCloseMessage(websocket.CloseNormalClosure, err.Error()))
 			return
@@ -103,7 +103,8 @@ func (c *Client) write(ws *websocket.Conn) {
 
 			ws.SetWriteDeadline(time.Now().Add(writeWait))
 			if err := ws.WriteJSON(msg); err != nil {
-				log.Printf("writeJSONErr: %s\n", err)
+				ws.WriteMessage(websocket.CloseMessage,
+					websocket.FormatCloseMessage(websocket.CloseInternalServerErr, err.Error()))
 				return
 			}
 
