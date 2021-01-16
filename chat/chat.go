@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/alextanhongpin/go-chat.v2/pkg/ticket"
 	"github.com/gorilla/websocket"
 )
 
@@ -33,7 +34,26 @@ type Command struct {
 	Msg string `json:"msg"`
 }
 
-func ServeWs(w http.ResponseWriter, r *http.Request) {
+type Chat struct {
+	issuer ticket.Issuer
+}
+
+func New(issuer ticket.Issuer) *Chat {
+	return &Chat{
+		issuer: issuer,
+	}
+}
+
+func (c *Chat) authorize(r *http.Request) (string, error) {
+	token := r.URL.Query().Get("token")
+	user, err := c.issuer.Verify(token)
+	if err != nil {
+		return "", err
+	}
+	return user, nil
+}
+
+func (c *Chat) ServeWs(w http.ResponseWriter, r *http.Request) {
 	ws, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Printf("upgradeWebSocketErr: %s", err)
@@ -41,12 +61,20 @@ func ServeWs(w http.ResponseWriter, r *http.Request) {
 	}
 	defer ws.Close()
 
+	user, err := c.authorize(r)
+	if err != nil {
+		ws.WriteMessage(websocket.CloseMessage,
+			websocket.FormatCloseMessage(websocket.CloseNormalClosure, fmt.Sprintf("unauthorized: %s", err.Error())))
+		return
+	}
+	log.Println("connected:", user)
+
 	ch := make(chan Command)
 	var wg sync.WaitGroup
 	wg.Add(1)
 
 	defer func() {
-		log.Println("disconnecting")
+		log.Println("disconnected:", user)
 	}()
 
 	go func() {

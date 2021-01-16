@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/alextanhongpin/go-chat.v2/chat"
+	"github.com/alextanhongpin/go-chat.v2/domain"
 	"github.com/alextanhongpin/go-chat.v2/pkg/ticket"
 	"github.com/julienschmidt/httprouter"
 )
@@ -21,6 +22,9 @@ const (
 )
 
 func main() {
+	// NOTE: Separate the token for authorizing user, vs token for authorizing
+	// websocket connection.
+	// For simplicity, we use the same for both.
 	issuer := ticket.New([]byte("secret :)"), 24*time.Hour)
 
 	router := httprouter.New()
@@ -28,8 +32,10 @@ func main() {
 
 	router.POST("/authenticate", newHandleAuthenticate(issuer))
 	router.POST("/authorize", authorize(issuer, handleAuthorize))
+
+	c := chat.New(issuer)
 	router.GET("/ws", func(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
-		chat.ServeWs(w, r)
+		c.ServeWs(w, r)
 	})
 
 	log.Printf("listening to port *:%d. press ctrl + c to cancel\n", port)
@@ -51,21 +57,14 @@ func authorize(t ticket.Issuer, next httprouter.Handle) httprouter.Handle {
 	}
 }
 
-type Credential struct {
-	AccessToken string `json:"accessToken"`
-}
-
-type User struct {
-	Username string `json:"username"`
-}
-
 func handleAuthorize(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
-	user, ok := r.Context().Value(contextKey("user"))
+	user, ok := r.Context().Value(contextKey("user")).(string)
 	if !ok {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	u := User{user}
+
+	u := domain.User{Username: user}
 	if err := json.NewEncoder(w).Encode(u); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -74,8 +73,8 @@ func handleAuthorize(w http.ResponseWriter, r *http.Request, _ httprouter.Params
 
 func newHandleAuthenticate(t ticket.Issuer) httprouter.Handle {
 	return func(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
-		var req User
-		if err := json.NewDecoder(r).Decode(&req); err != nil {
+		var req domain.User
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
@@ -86,7 +85,7 @@ func newHandleAuthenticate(t ticket.Issuer) httprouter.Handle {
 			return
 		}
 
-		res := Credential{
+		res := domain.Credential{
 			AccessToken: ticket,
 		}
 		if err := json.NewEncoder(w).Encode(&res); err != nil {

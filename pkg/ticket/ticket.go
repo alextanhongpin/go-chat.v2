@@ -43,6 +43,9 @@ func (t *Ticket) Verify(tokenString string) (string, error) {
 
 		return t.secret, nil
 	})
+	if err != nil {
+		return "", err
+	}
 
 	if claims, ok := token.Claims.(jwt.MapClaims); ok && token.Valid {
 		return claims["sub"].(string), nil
