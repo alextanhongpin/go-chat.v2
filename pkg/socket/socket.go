@@ -89,6 +89,14 @@ func (s *Socket) RoomMembers(room string) ([]string, error) {
 	return s.rdb.SMembers(context.Background(), room).Result()
 }
 
+func (s *Socket) CheckOnline(room string) bool {
+	members, err := s.RoomMembers(room)
+	if err != nil {
+		return false
+	}
+	return len(members) > 0
+}
+
 func (s *Socket) ServeWS(w http.ResponseWriter, r *http.Request) {
 	ws, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -113,6 +121,9 @@ func (s *Socket) ServeWS(w http.ResponseWriter, r *http.Request) {
 	defer s.LeaveRoom(client.ID, user)
 
 	// TODO: Notify presence.
+	if err := s.FetchFriendsStatus(user); err != nil {
+		log.Printf("friendStatusErr: %s\n", err)
+	}
 	s.NotifyPresence(user, true)
 
 	client.On("send_message", func(in map[string]interface{}) error {
@@ -123,11 +134,7 @@ func (s *Socket) ServeWS(w http.ResponseWriter, r *http.Request) {
 			Type:    "message_sent",
 			Payload: in,
 		}
-		b, err := json.Marshal(msg)
-		if err != nil {
-			return err
-		}
-		return s.rdb.Publish(context.Background(), channel, string(b)).Err()
+		return s.PublishRemote(context.Background(), msg)
 		// Write to own socket.
 		//client.Write(Message{
 		//Type: "message_sent",
@@ -147,13 +154,43 @@ func (s *Socket) ServeWS(w http.ResponseWriter, r *http.Request) {
 	client.ServeWS(ws)
 	log.Println("disconnected:", client.ID)
 	s.NotifyPresence(user, false)
+}
 
+type FriendStatus struct {
+	Username string `json:"username"`
+	To       string `json:"to"`
+	Online   bool   `json:"online"`
+}
+
+func (s *Socket) FetchFriendsStatus(user string) error {
+	friends := s.friends.FindFriendsFor(user)
+	var friendsStatus []FriendStatus
+	for _, friend := range friends {
+		friendsStatus = append(friendsStatus, FriendStatus{
+			Username: friend,
+			To:       user,
+			Online:   s.CheckOnline(friend),
+		})
+	}
+
+	msg := Message{
+		Type: "friends_fetched",
+		Payload: map[string]interface{}{
+			"to":      user,
+			"friends": friendsStatus,
+		},
+	}
+	return s.PublishRemote(context.Background(), msg)
 }
 
 func (s *Socket) NotifyPresence(user string, online bool) {
 	friends := s.friends.FindFriendsFor(user)
 
 	for _, friend := range friends {
+		if !s.CheckOnline(friend) {
+			continue
+		}
+
 		msg := Message{
 			Type: "presence_notified",
 			Payload: map[string]interface{}{
@@ -162,13 +199,8 @@ func (s *Socket) NotifyPresence(user string, online bool) {
 				"online":   online,
 			},
 		}
-		b, err := json.Marshal(msg)
-		if err != nil {
-			log.Printf("notifyPresenceMarhshalErr: %s\n", err)
-			continue
-		}
 
-		if err := s.rdb.Publish(context.Background(), channel, string(b)).Err(); err != nil {
+		if err := s.PublishRemote(context.Background(), msg); err != nil {
 			log.Printf("notifyPresencePublishErr: %s\n", err)
 			continue
 		}
@@ -203,4 +235,12 @@ func (s *Socket) Publish(id string, msg interface{}) {
 	if client, exist := s.clients[id]; exist {
 		client.Write(msg)
 	}
+}
+
+func (s *Socket) PublishRemote(ctx context.Context, in interface{}) error {
+	b, err := json.Marshal(in)
+	if err != nil {
+		return err
+	}
+	return s.rdb.Publish(ctx, channel, string(b)).Err()
 }

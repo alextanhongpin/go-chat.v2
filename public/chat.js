@@ -3,6 +3,7 @@ import Service from "./service.js";
 const $ = el => document.getElementById(el);
 
 async function onload() {
+  let friends = [];
   const service = new Service();
   const username = await service.authorize();
   $("output").innerText = `Hi ${username}`;
@@ -37,7 +38,8 @@ async function onload() {
 
   const eventHandlers = {
     presence_notified: presenceNotified,
-    message_sent: messageSent
+    message_sent: messageSent,
+    friends_fetched: friendsFetched
   };
 
   function messageSent(payload) {
@@ -45,14 +47,28 @@ async function onload() {
     $("output").innerText += payload.msg;
   }
 
-  function presenceNotified(payload) {
-    $("aside").innerHTML = [payload]
+  function presenceNotified({ username, online }) {
+    friends = friends.map(friend =>
+      friend.username === username
+        ? {
+            username,
+            online
+          }
+        : friend
+    );
+    renderFriends();
+  }
+
+  function friendsFetched({ friends: onlineFriends = [] } = {}) {
+    friends = onlineFriends;
+    renderFriends();
+  }
+  function renderFriends() {
+    $("aside").innerHTML = friends
       .map(({ username, online }) => {
         return `<div>${username} ${online ? "online" : "offline"}</div>`;
       })
       .join("\n");
-
-    console.log("presenceNotified", payload);
   }
 
   function eventProcessor(event) {
