@@ -14,22 +14,6 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-const (
-	channel = "chat"
-
-	// Time allowed to write a message to the peer.
-	writeWait = 10 * time.Second
-
-	// Time allowed to read the next pong message from the peer.
-	pongWait = 60 * time.Second
-
-	// Send pings to peer with this period. Must be less than pongWait.
-	pingPeriod = (pongWait * 9) / 10
-
-	// Maximum message size allowed from peer.
-	maxMessageSize = 512
-)
-
 var upgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,
@@ -41,6 +25,7 @@ type Socket struct {
 	clients map[string]*Client
 	issuer  ticket.Issuer
 	rdb     *redis.Client
+	friends *FriendService
 }
 
 func NewSocket(issuer ticket.Issuer) *Socket {
@@ -48,6 +33,7 @@ func NewSocket(issuer ticket.Issuer) *Socket {
 		clients: make(map[string]*Client),
 		issuer:  issuer,
 		rdb:     NewRedis(),
+		friends: NewFriendService(),
 	}
 	s.subscribe()
 	return s
@@ -127,6 +113,7 @@ func (s *Socket) ServeWS(w http.ResponseWriter, r *http.Request) {
 	defer s.LeaveRoom(client.ID, user)
 
 	// TODO: Notify presence.
+	s.NotifyPresence(user, true)
 
 	client.On("send_message", func(in map[string]interface{}) error {
 		in["from"] = user
@@ -159,6 +146,33 @@ func (s *Socket) ServeWS(w http.ResponseWriter, r *http.Request) {
 	log.Println("connected:", client.ID)
 	client.ServeWS(ws)
 	log.Println("disconnected:", client.ID)
+	s.NotifyPresence(user, false)
+
+}
+
+func (s *Socket) NotifyPresence(user string, online bool) {
+	friends := s.friends.FindFriendsFor(user)
+
+	for _, friend := range friends {
+		msg := Message{
+			Type: "presence_notified",
+			Payload: map[string]interface{}{
+				"to":       friend,
+				"username": user,
+				"online":   online,
+			},
+		}
+		b, err := json.Marshal(msg)
+		if err != nil {
+			log.Printf("notifyPresenceMarhshalErr: %s\n", err)
+			continue
+		}
+
+		if err := s.rdb.Publish(context.Background(), channel, string(b)).Err(); err != nil {
+			log.Printf("notifyPresencePublishErr: %s\n", err)
+			continue
+		}
+	}
 }
 
 func (s *Socket) Register(c *Client) {

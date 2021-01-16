@@ -46,7 +46,7 @@ async function onload() {
   }
 
   function presenceNotified(payload) {
-    $("aside").innerHTML = payload
+    $("aside").innerHTML = [payload]
       .map(({ username, online }) => {
         return `<div>${username} ${online ? "online" : "offline"}</div>`;
       })
