@@ -125,8 +125,8 @@ func (c *Chat) fetchFriendsStatus(user string) error {
 
 	msg := socket.Message{
 		Type: "friends_fetched",
-		To:   user,
 		From: user,
+		To:   user,
 		Payload: map[string]interface{}{
 			"friends": friendsStatus,
 		},
@@ -144,8 +144,8 @@ func (c *Chat) notifyPresence(user string, online bool) {
 
 		msg := socket.Message{
 			Type: "presence_notified",
-			To:   friend,
 			From: user,
+			To:   friend,
 			Payload: map[string]interface{}{
 				"username": user,
 				"online":   online,

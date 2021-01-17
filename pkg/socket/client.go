@@ -48,7 +48,7 @@ func NewClient(ws *websocket.Conn, user string) *Client {
 		done:  make(chan struct{}),
 		msgCh: make(chan Message),
 		errCh: make(chan SocketError),
-		evtCh: make(chan Event, 2), // At most two events.
+		evtCh: make(chan Event),
 	}
 }
 
@@ -61,7 +61,10 @@ func (c *Client) Connect() {
 // called multiple times.
 func (c *Client) Close() {
 	c.once.Do(func() {
+		// Sender should close the channel upon completion.
 		c.evtCh <- NewDisconnectedEvent(c)
+		close(c.evtCh)
+
 		close(c.done)
 		c.wg.Wait()
 	})
