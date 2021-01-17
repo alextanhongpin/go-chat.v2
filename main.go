@@ -18,7 +18,7 @@ import (
 type contextKey string
 
 const (
-	port = 4000
+	port = 3000
 )
 
 func main() {
@@ -32,10 +32,11 @@ func main() {
 	router.POST("/authorize", authorize(issuer, handleAuthorize))
 	router.NotFound = http.FileServer(http.Dir("public"))
 
-	skt := socket.NewSocket(issuer)
+	s, cancel := socket.NewSocket(issuer)
+	defer cancel()
 
 	handleWs := func(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
-		skt.ServeWS(w, r)
+		s.ServeWS(w, r)
 	}
 	router.GET("/ws", handleWs)
 

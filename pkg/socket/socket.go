@@ -20,26 +20,26 @@ var upgrader = websocket.Upgrader{
 
 type Socket struct {
 	sync.RWMutex
-
 	clients map[string]*Client
 	issuer  ticket.Issuer
 	rdb     *redis.Client
 	friends *FriendService
 }
 
-func NewSocket(issuer ticket.Issuer) *Socket {
+func NewSocket(issuer ticket.Issuer) (*Socket, func()) {
 	s := &Socket{
 		clients: make(map[string]*Client),
 		issuer:  issuer,
 		rdb:     NewRedis(),
 		friends: NewFriendService(),
 	}
-	s.subscribe()
-	return s
+	ctx, cancel := context.WithCancel(context.Background())
+	s.subscribe(ctx)
+	return s, cancel
 }
 
-func (s *Socket) subscribe() {
-	pubsub := s.rdb.Subscribe(context.Background(), channel)
+func (s *Socket) subscribe(ctx context.Context) {
+	pubsub := s.rdb.Subscribe(ctx, channel)
 
 	go func() {
 		ch := pubsub.Channel()
@@ -103,49 +103,69 @@ func (s *Socket) ServeWS(w http.ResponseWriter, r *http.Request) {
 	user, err := s.authorize(r)
 	if err != nil {
 		ws.WriteMessage(websocket.CloseMessage,
-			websocket.FormatCloseMessage(websocket.ClosePolicyViolation, fmt.Sprintf("unauthorized: %s", err.Error())))
+			websocket.FormatCloseMessage(
+				websocket.ClosePolicyViolation,
+				fmt.Sprintf("unauthorized: %s", err.Error()),
+			),
+		)
 		return
 	}
 
-	client := NewClient()
+	client := NewClient(ws, user)
 
+	// Close the write channel once the read is closed.
+	defer client.Close()
+
+	// Perform logic on connection.
+	s.Connected(client)
+
+	// Cleanup.
+	defer s.Disconnected(client)
+
+	// Start the read channel, when the user closes the tab, the for loop will
+	// stop.
+	for msg := range client.On() {
+		switch msg.Type {
+		case SendMessage:
+			msg.From = user
+			msg.To = user
+			msg.Type = "message_sent"
+			s.PublishRemote(context.Background(), msg)
+		default:
+			log.Printf("not implemented: %v\n", msg)
+		}
+	}
+}
+
+func (s *Socket) Connected(client *Client) {
 	s.Register(client)
-	defer s.Deregister(client)
 
-	s.JoinRoom(client.ID, user)
-	defer s.LeaveRoom(client.ID, user)
+	if err := s.JoinRoom(client.ID, client.User); err != nil {
+		log.Printf("joinRoomErr: %s\n", err)
+	}
 
-	// TODO: Notify presence.
-	if err := s.FetchFriendsStatus(user); err != nil {
+	if err := s.FetchFriendsStatus(client.User); err != nil {
 		log.Printf("friendStatusErr: %s\n", err)
 	}
-	s.NotifyPresence(user, true)
-	defer s.NotifyPresence(user, s.CheckOnline(user))
 
-	client.On("send_message", func(i interface{}) error {
-		msg := i.(Message)
-		msg.From = user
-		msg.To = user
-		msg.Type = "message_sent"
-		return s.PublishRemote(context.Background(), msg)
-		// Write to own socket.
-		//client.Write(Message{
-		//Type: "message_sent",
-		//Payload: map[string]interface{}{
-		//"msg":  in["msg"].(string),
-		//"from": user,
-		//"to":   user,
-		//},
-		//})
-		// Publish to all connected clients.
-		//s.Broadcast(msg)
-		//
-		// Publish to one specific client.
-	})
+	// NOTE: This is redundant if the user is already online on other devices.
+	// A better way is to send if the user logins only on one device.
+	s.NotifyPresence(client.User, true)
+}
 
-	log.Println("connected:", client.ID)
-	client.ServeWS(ws)
-	log.Println("disconnected:", client.ID)
+func (s *Socket) Disconnected(client *Client) {
+	s.Deregister(client)
+
+	// NOTE: We need a better way to manage user rooms, as they might not be
+	// removed from the room, leading to a lot of failed deliveries.
+	if err := s.LeaveRoom(client.ID, client.User); err != nil {
+		log.Printf("leaveRoomErr: %s\n", err)
+	}
+
+	// NOTE: The user may be online on several devices. Even though the user
+	// shares the same id, the session is different. We only notify the user is
+	// offline when the session counts falls to 0.
+	s.NotifyPresence(client.User, s.CheckOnline(client.User))
 }
 
 type FriendStatus struct {
@@ -213,21 +233,21 @@ func (s *Socket) Deregister(c *Client) {
 	s.Unlock()
 }
 
-func (s *Socket) Broadcast(msg interface{}) {
+func (s *Socket) Broadcast(msg Message) {
 	s.RLock()
 	defer s.RUnlock()
 
 	for _, client := range s.clients {
-		client.Write(msg)
+		client.Emit(msg)
 	}
 }
 
-func (s *Socket) Publish(id string, msg interface{}) {
+func (s *Socket) Publish(id string, msg Message) {
 	s.RLock()
 	defer s.RUnlock()
 
 	if client, exist := s.clients[id]; exist {
-		client.Write(msg)
+		client.Emit(msg)
 	}
 }
 

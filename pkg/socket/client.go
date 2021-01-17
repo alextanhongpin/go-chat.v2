@@ -5,7 +5,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/alextanhongpin/go-chat.v2/pkg/eventbus"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 )
@@ -27,93 +26,117 @@ const (
 )
 
 type Client struct {
-	ID string
-	ch chan interface{}
-	eventbus.Engine
+	ID   string
+	User string
+
+	wg   sync.WaitGroup
+	ws   *websocket.Conn
+	done chan struct{}
+	once sync.Once
+
+	// Message that is written to the client.
+	emitCh chan Message
 }
 
-func NewClient() *Client {
-	return &Client{
+func NewClient(ws *websocket.Conn, user string) *Client {
+	c := &Client{
+		ws:     ws,
+		User:   user,
 		ID:     uuid.New().String(),
-		ch:     make(chan interface{}),
-		Engine: eventbus.New(),
+		emitCh: make(chan Message),
+		done:   make(chan struct{}),
 	}
+	c.init(ws)
+	return c
 }
 
-func (c *Client) ServeWS(ws *websocket.Conn) {
-	var wg sync.WaitGroup
-	wg.Add(1)
-
-	go func() {
-		defer wg.Done()
-
-		c.write(ws)
-	}()
-	c.read(ws)
-
-	close(c.ch)
-	wg.Wait()
+func (c *Client) init(ws *websocket.Conn) {
+	c.write(ws)
 }
 
-func (c *Client) read(ws *websocket.Conn) {
-	defer ws.Close()
-
-	ws.SetReadLimit(maxMessageSize)
-	ws.SetReadDeadline(time.Now().Add(pongWait))
-	ws.SetPongHandler(func(string) error {
-		ws.SetReadDeadline(time.Now().Add(pongWait))
-		return nil
+// Close signals the write channel to be closed. Idempotent, can be
+// called multiple times.
+func (c *Client) Close() {
+	c.once.Do(func() {
+		close(c.done)
+		c.wg.Wait()
 	})
-
-	var msg Message
-	for {
-		if err := ws.ReadJSON(&msg); err != nil {
-			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-				log.Printf("error: %v", err)
-			}
-			break
-		}
-
-		if err := c.Emit(msg.Type, msg); err != nil {
-			ws.WriteMessage(websocket.CloseMessage,
-				websocket.FormatCloseMessage(websocket.CloseNormalClosure, err.Error()))
-			return
-		}
-	}
 }
 
-func (c *Client) Write(in interface{}) {
-	c.ch <- in
+// Emit sends a message to the client.
+func (c *Client) Emit(m Message) {
+	c.emitCh <- m
+}
+
+// On listens to messages from the client.
+func (c *Client) On() <-chan Message {
+	return read(c.ws)
 }
 
 func (c *Client) write(ws *websocket.Conn) {
-	defer ws.Close()
+	c.wg.Add(1)
 
-	t := time.NewTicker(pingPeriod)
-	defer t.Stop()
+	go func() {
+		defer c.wg.Done()
+		defer ws.Close()
 
-	for {
-		select {
-		case msg, ok := <-c.ch:
-			if !ok {
-				// The hub closed the channel.
-				ws.WriteMessage(websocket.CloseMessage, []byte{})
+		t := time.NewTicker(pingPeriod)
+		defer t.Stop()
+
+		for {
+			select {
+			case <-c.done:
 				return
-			}
+			case msg, ok := <-c.emitCh:
+				if !ok {
+					// The hub closed the channel.
+					ws.WriteMessage(websocket.CloseMessage, []byte{})
+					return
+				}
 
-			ws.SetWriteDeadline(time.Now().Add(writeWait))
-			if err := ws.WriteJSON(msg); err != nil {
-				ws.WriteMessage(websocket.CloseMessage,
-					websocket.FormatCloseMessage(websocket.CloseInternalServerErr, err.Error()))
-				return
-			}
+				ws.SetWriteDeadline(time.Now().Add(writeWait))
+				if err := ws.WriteJSON(msg); err != nil {
+					ws.WriteMessage(websocket.CloseMessage,
+						websocket.FormatCloseMessage(websocket.CloseInternalServerErr, err.Error()))
+					return
+				}
 
-		// PING.
-		case <-t.C:
-			ws.SetWriteDeadline(time.Now().Add(writeWait))
-			if err := ws.WriteMessage(websocket.PingMessage, []byte{}); err != nil {
-				return
+			// PING.
+			case <-t.C:
+				ws.SetWriteDeadline(time.Now().Add(writeWait))
+				if err := ws.WriteMessage(websocket.PingMessage, []byte{}); err != nil {
+					return
+				}
 			}
 		}
-	}
+	}()
+}
+
+func read(ws *websocket.Conn) <-chan Message {
+	ch := make(chan Message)
+
+	go func() {
+		defer ws.Close()
+
+		ws.SetReadLimit(maxMessageSize)
+		ws.SetReadDeadline(time.Now().Add(pongWait))
+		ws.SetPongHandler(func(string) error {
+			ws.SetReadDeadline(time.Now().Add(pongWait))
+			return nil
+		})
+
+		var msg Message
+		for {
+			if err := ws.ReadJSON(&msg); err != nil {
+				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
+					log.Printf("websocketCloseErr: %s\n", err)
+				}
+				close(ch)
+				return
+			}
+			ch <- msg
+		}
+	}()
+
+	return ch
 }
