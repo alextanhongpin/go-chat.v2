@@ -13,6 +13,8 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+const channel = "chat"
+
 var upgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,
@@ -20,18 +22,25 @@ var upgrader = websocket.Upgrader{
 
 type Socket struct {
 	sync.RWMutex
-	clients map[string]*Client
-	issuer  ticket.Issuer
-	rdb     *redis.Client
-	friends *FriendService
+	clients  map[string]*Client
+	issuer   ticket.Issuer
+	rdb      *redis.Client
+	evtCh    chan Event
+	clientCh chan *ClientListener
+}
+
+type ClientListener struct {
+	Client *Client
+	Chan   chan *Client
 }
 
 func NewSocket(issuer ticket.Issuer) (*Socket, func()) {
 	s := &Socket{
-		clients: make(map[string]*Client),
-		issuer:  issuer,
-		rdb:     NewRedis(),
-		friends: NewFriendService(),
+		clients:  make(map[string]*Client),
+		issuer:   issuer,
+		rdb:      NewRedis(),
+		evtCh:    make(chan Event),
+		clientCh: make(chan *ClientListener),
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	s.subscribe(ctx)
@@ -72,11 +81,11 @@ func (s *Socket) authorize(r *http.Request) (string, error) {
 	return user, nil
 }
 
-func (s *Socket) JoinRoom(socketID, room string) error {
+func (s *Socket) JoinRoom(room, socketID string) error {
 	return s.rdb.SAdd(context.Background(), room, []string{socketID}).Err()
 }
 
-func (s *Socket) LeaveRoom(socketID, room string) error {
+func (s *Socket) LeaveRoom(room, socketID string) error {
 	return s.rdb.SRem(context.Background(), room, []string{socketID}).Err()
 }
 
@@ -122,103 +131,32 @@ func (s *Socket) ServeWS(w http.ResponseWriter, r *http.Request) {
 	// Cleanup.
 	defer s.Disconnected(client)
 
-	// Start the read channel, when the user closes the tab, the for loop will
-	// stop.
-	for msg := range client.On() {
-		switch msg.Type {
-		case SendMessage:
-			msg.From = user
-			msg.To = user
-			msg.Type = "message_sent"
-			s.PublishRemote(context.Background(), msg)
-		default:
-			log.Printf("not implemented: %v\n", msg)
-		}
+	// Sends the client to the listener while blocking the main loop here.
+	// This make use of messaging patterns to keep the code reusable.
+	listener := &ClientListener{
+		Client: client,
+		Chan:   make(chan *Client),
 	}
+	s.clientCh <- listener
+	<-listener.Chan
 }
 
 func (s *Socket) Connected(client *Client) {
 	s.Register(client)
+	s.evtCh <- NewRegisteredEvent(client)
+}
 
-	if err := s.JoinRoom(client.ID, client.User); err != nil {
-		log.Printf("joinRoomErr: %s\n", err)
-	}
+func (s *Socket) EventListener() chan Event {
+	return s.evtCh
+}
 
-	if err := s.FetchFriendsStatus(client.User); err != nil {
-		log.Printf("friendStatusErr: %s\n", err)
-	}
-
-	// NOTE: This is redundant if the user is already online on other devices.
-	// A better way is to send if the user logins only on one device.
-	s.NotifyPresence(client.User, true)
+func (s *Socket) ClientListener() chan *ClientListener {
+	return s.clientCh
 }
 
 func (s *Socket) Disconnected(client *Client) {
 	s.Deregister(client)
-
-	// NOTE: We need a better way to manage user rooms, as they might not be
-	// removed from the room, leading to a lot of failed deliveries.
-	if err := s.LeaveRoom(client.ID, client.User); err != nil {
-		log.Printf("leaveRoomErr: %s\n", err)
-	}
-
-	// NOTE: The user may be online on several devices. Even though the user
-	// shares the same id, the session is different. We only notify the user is
-	// offline when the session counts falls to 0.
-	s.NotifyPresence(client.User, s.CheckOnline(client.User))
-}
-
-type FriendStatus struct {
-	Username string `json:"username"`
-	To       string `json:"to"`
-	Online   bool   `json:"online"`
-}
-
-func (s *Socket) FetchFriendsStatus(user string) error {
-	friends := s.friends.FindFriendsFor(user)
-	var friendsStatus []FriendStatus
-	for _, friend := range friends {
-		friendsStatus = append(friendsStatus, FriendStatus{
-			Username: friend,
-			To:       user,
-			Online:   s.CheckOnline(friend),
-		})
-	}
-
-	msg := Message{
-		Type: "friends_fetched",
-		To:   user,
-		From: user,
-		Payload: map[string]interface{}{
-			"friends": friendsStatus,
-		},
-	}
-	return s.PublishRemote(context.Background(), msg)
-}
-
-func (s *Socket) NotifyPresence(user string, online bool) {
-	friends := s.friends.FindFriendsFor(user)
-
-	for _, friend := range friends {
-		if !s.CheckOnline(friend) {
-			continue
-		}
-
-		msg := Message{
-			Type: "presence_notified",
-			To:   friend,
-			From: user,
-			Payload: map[string]interface{}{
-				"username": user,
-				"online":   online,
-			},
-		}
-
-		if err := s.PublishRemote(context.Background(), msg); err != nil {
-			log.Printf("notifyPresencePublishErr: %s\n", err)
-			continue
-		}
-	}
+	s.evtCh <- NewDeregisteredEvent(client)
 }
 
 func (s *Socket) Register(c *Client) {

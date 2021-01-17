@@ -10,7 +10,6 @@ import (
 )
 
 const (
-	channel = "chat"
 
 	// Time allowed to write a message to the peer.
 	writeWait = 10 * time.Second
@@ -35,16 +34,18 @@ type Client struct {
 	once sync.Once
 
 	// Message that is written to the client.
-	emitCh chan Message
+	msgCh chan Message
+	errCh chan SocketError
 }
 
 func NewClient(ws *websocket.Conn, user string) *Client {
 	c := &Client{
-		ws:     ws,
-		User:   user,
-		ID:     uuid.New().String(),
-		emitCh: make(chan Message),
-		done:   make(chan struct{}),
+		ws:    ws,
+		User:  user,
+		ID:    uuid.New().String(),
+		msgCh: make(chan Message),
+		errCh: make(chan SocketError),
+		done:  make(chan struct{}),
 	}
 	c.init(ws)
 	return c
@@ -65,7 +66,12 @@ func (c *Client) Close() {
 
 // Emit sends a message to the client.
 func (c *Client) Emit(m Message) {
-	c.emitCh <- m
+	c.msgCh <- m
+}
+
+// Emit sends a message to the client.
+func (c *Client) Error(err SocketError) {
+	c.errCh <- err
 }
 
 // On listens to messages from the client.
@@ -87,7 +93,12 @@ func (c *Client) write(ws *websocket.Conn) {
 			select {
 			case <-c.done:
 				return
-			case msg, ok := <-c.emitCh:
+			case err := <-c.errCh:
+				ws.WriteMessage(websocket.CloseMessage,
+					websocket.FormatCloseMessage(err.Code, err.Error()))
+				return
+
+			case msg, ok := <-c.msgCh:
 				if !ok {
 					// The hub closed the channel.
 					ws.WriteMessage(websocket.CloseMessage, []byte{})

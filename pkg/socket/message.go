@@ -1,9 +1,5 @@
 package socket
 
-const (
-	SendMessage = "send_message"
-)
-
 type Message struct {
 	Type    string                 `json:"type"`
 	From    string                 `json:"from"`

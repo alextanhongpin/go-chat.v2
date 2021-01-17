@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/alextanhongpin/go-chat.v2/chat"
 	"github.com/alextanhongpin/go-chat.v2/domain"
-	"github.com/alextanhongpin/go-chat.v2/pkg/socket"
 	"github.com/alextanhongpin/go-chat.v2/pkg/ticket"
 	"github.com/julienschmidt/httprouter"
 )
@@ -32,11 +32,12 @@ func main() {
 	router.POST("/authorize", authorize(issuer, handleAuthorize))
 	router.NotFound = http.FileServer(http.Dir("public"))
 
-	s, cancel := socket.NewSocket(issuer)
+	c, cancel := chat.New(issuer)
 	defer cancel()
 
 	handleWs := func(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
-		s.ServeWS(w, r)
+		log.Println("serving websocket")
+		c.ServeWS(w, r)
 	}
 	router.GET("/ws", handleWs)
 

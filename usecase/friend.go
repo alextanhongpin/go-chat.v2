@@ -1,4 +1,4 @@
-package socket
+package usecase
 
 type FriendService struct {
 	friends map[string][]string
