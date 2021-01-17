@@ -30,35 +30,38 @@ type Client struct {
 
 	wg   sync.WaitGroup
 	ws   *websocket.Conn
-	done chan struct{}
 	once sync.Once
 
-	// Message that is written to the client.
+	done  chan struct{}
 	msgCh chan Message
 	errCh chan SocketError
+	evtCh chan Event
 }
 
 func NewClient(ws *websocket.Conn, user string) *Client {
-	c := &Client{
-		ws:    ws,
-		User:  user,
-		ID:    uuid.New().String(),
+	return &Client{
+		ID:   uuid.New().String(),
+		User: user,
+
+		ws: ws,
+
+		done:  make(chan struct{}),
 		msgCh: make(chan Message),
 		errCh: make(chan SocketError),
-		done:  make(chan struct{}),
+		evtCh: make(chan Event, 2), // At most two events.
 	}
-	c.init(ws)
-	return c
 }
 
-func (c *Client) init(ws *websocket.Conn) {
-	c.write(ws)
+func (c *Client) Connect() {
+	c.evtCh <- NewConnectedEvent(c)
+	c.write(c.ws)
 }
 
 // Close signals the write channel to be closed. Idempotent, can be
 // called multiple times.
 func (c *Client) Close() {
 	c.once.Do(func() {
+		c.evtCh <- NewDisconnectedEvent(c)
 		close(c.done)
 		c.wg.Wait()
 	})
@@ -77,6 +80,10 @@ func (c *Client) Error(err SocketError) {
 // On listens to messages from the client.
 func (c *Client) On() <-chan Message {
 	return read(c.ws)
+}
+
+func (c *Client) Events() <-chan Event {
+	return c.evtCh
 }
 
 func (c *Client) write(ws *websocket.Conn) {

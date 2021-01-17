@@ -32,12 +32,27 @@ func main() {
 	router.POST("/authorize", authorize(issuer, handleAuthorize))
 	router.NotFound = http.FileServer(http.Dir("public"))
 
-	c, cancel := chat.New(issuer)
-	defer cancel()
+	c := chat.New(issuer)
+	defer c.Close()
 
 	handleWs := func(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
-		log.Println("serving websocket")
-		c.ServeWS(w, r)
+		client, err := c.Connect(w, r)
+		if err != nil {
+			return
+		}
+		defer client.Close()
+
+		for msg := range client.On() {
+			switch msg.Type {
+			case chat.SendMessage:
+				msg.From = client.User
+				msg.To = client.User
+				msg.Type = "message_sent"
+				c.PublishRemote(context.Background(), msg)
+			default:
+				log.Printf("not implemented: %v\n", msg)
+			}
+		}
 	}
 	router.GET("/ws", handleWs)
 

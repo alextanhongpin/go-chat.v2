@@ -16,26 +16,27 @@ const (
 
 type Chat struct {
 	wg sync.WaitGroup
+
 	*socket.Socket
 	friends *usecase.FriendService
 }
 
-func New(issuer ticket.Issuer) (*Chat, func()) {
-	s, cancel := socket.NewSocket(issuer)
+func New(issuer ticket.Issuer) *Chat {
 	c := &Chat{
-		Socket:  s,
+		Socket:  socket.NewSocket(issuer),
 		friends: usecase.NewFriendService(),
 	}
 	c.init()
-	return c, func() {
-		cancel()
-		c.wg.Wait()
-	}
+	return c
 }
 
 func (c *Chat) init() {
 	c.initEventListener()
-	c.initClientListener()
+}
+
+func (c *Chat) Close() {
+	c.Socket.Close()
+	c.wg.Wait()
 }
 
 func (c *Chat) initEventListener() {
@@ -50,54 +51,19 @@ func (c *Chat) initEventListener() {
 	}()
 }
 
-func (c *Chat) initClientListener() {
-	c.wg.Add(1)
-
-	go func() {
-		defer c.wg.Done()
-
-		for listener := range c.ClientListener() {
-			c.wg.Add(1)
-
-			go func(listener *socket.ClientListener) {
-				defer c.wg.Done()
-
-				client := listener.Client
-
-				// Start the read channel, when the user closes the tab, the for loop
-				// will stop.
-				for msg := range listener.Client.On() {
-					switch msg.Type {
-					case SendMessage:
-						msg.From = client.User
-						msg.To = client.User
-						msg.Type = "message_sent"
-						c.PublishRemote(context.Background(), msg)
-					default:
-						log.Printf("not implemented: %v\n", msg)
-					}
-				}
-
-				// Signal completion.
-				listener.Chan <- listener.Client
-			}(listener)
-		}
-	}()
-}
-
 func (c *Chat) eventProcessor(evt socket.Event) {
 	switch e := evt.(type) {
-	case socket.Registered:
-		c.registered(e)
-	case socket.Deregistered:
-		c.deregistered(e)
+	case socket.Connected:
+		c.connected(e)
+	case socket.Disconnected:
+		c.disconnected(e)
 	default:
 		log.Printf("not handle: %s\n", e.GetTypeName())
 	}
 }
 
-func (c *Chat) registered(e socket.Registered) {
-	log.Println("registered", e.Client.User)
+func (c *Chat) connected(e socket.Connected) {
+	log.Println("connected", e.Client.User)
 	var (
 		client = e.Client
 		user   = client.User
@@ -119,13 +85,13 @@ func (c *Chat) registered(e socket.Registered) {
 	c.notifyPresence(user, true)
 }
 
-func (c *Chat) deregistered(e socket.Deregistered) {
+func (c *Chat) disconnected(e socket.Disconnected) {
 	var (
 		client = e.Client
 		user   = client.User
 		id     = client.ID
 	)
-	log.Println("deregistered", e.Client.User)
+	log.Println("disconnected", e.Client.User)
 
 	if err := c.LeaveRoom(user, id); err != nil {
 		client.Error(socket.InternalServerError(err))

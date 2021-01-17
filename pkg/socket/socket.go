@@ -22,51 +22,67 @@ var upgrader = websocket.Upgrader{
 
 type Socket struct {
 	sync.RWMutex
-	clients  map[string]*Client
-	issuer   ticket.Issuer
-	rdb      *redis.Client
-	evtCh    chan Event
-	clientCh chan *ClientListener
+	wg      sync.WaitGroup
+	clients map[string]*Client
+	issuer  ticket.Issuer
+	rdb     *redis.Client
+	once    sync.Once
+	done    chan struct{}
+	evtCh   chan Event
 }
 
-type ClientListener struct {
-	Client *Client
-	Chan   chan *Client
-}
-
-func NewSocket(issuer ticket.Issuer) (*Socket, func()) {
+func NewSocket(issuer ticket.Issuer) *Socket {
 	s := &Socket{
-		clients:  make(map[string]*Client),
-		issuer:   issuer,
-		rdb:      NewRedis(),
-		evtCh:    make(chan Event),
-		clientCh: make(chan *ClientListener),
+		clients: make(map[string]*Client),
+		issuer:  issuer,
+		rdb:     NewRedis(),
+		done:    make(chan struct{}),
+		evtCh:   make(chan Event),
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	s.subscribe(ctx)
-	return s, cancel
+	s.init()
+
+	return s
 }
 
-func (s *Socket) subscribe(ctx context.Context) {
-	pubsub := s.rdb.Subscribe(ctx, channel)
+func (s *Socket) init() {
+	s.subscribe()
+}
+
+func (s *Socket) Close() {
+	s.once.Do(func() {
+		close(s.done)
+		s.wg.Wait()
+	})
+}
+
+func (s *Socket) subscribe() {
+	s.wg.Add(1)
+	pubsub := s.rdb.Subscribe(context.Background(), channel)
 
 	go func() {
+		defer s.wg.Done()
+
 		ch := pubsub.Channel()
 
-		for msg := range ch {
-			var m Message
-			if err := json.Unmarshal([]byte(msg.Payload), &m); err != nil {
-				log.Printf("unmarshalErr: %s\n", err)
-				continue
-			}
-			socketIDs, err := s.RoomMembers(m.To)
-			if err != nil {
-				log.Printf("RoomMembersErr: %s\n", err)
-				continue
-			}
+		for {
+			select {
+			case <-s.done:
+				return
+			case msg := <-ch:
+				var m Message
+				if err := json.Unmarshal([]byte(msg.Payload), &m); err != nil {
+					log.Printf("unmarshalErr: %s\n", err)
+					continue
+				}
+				socketIDs, err := s.RoomMembers(m.To)
+				if err != nil {
+					log.Printf("RoomMembersErr: %s\n", err)
+					continue
+				}
 
-			for _, socketID := range socketIDs {
-				s.Publish(socketID, m)
+				for _, socketID := range socketIDs {
+					s.Publish(socketID, m)
+				}
 			}
 		}
 	}()
@@ -101,11 +117,10 @@ func (s *Socket) CheckOnline(room string) bool {
 	return len(members) > 0
 }
 
-func (s *Socket) ServeWS(w http.ResponseWriter, r *http.Request) {
+func (s *Socket) Connect(w http.ResponseWriter, r *http.Request) (*Client, error) {
 	ws, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		log.Printf("upgradeWebSocketErr: %s", err)
-		return
+		return nil, err
 	}
 
 	// Authorize.
@@ -117,55 +132,42 @@ func (s *Socket) ServeWS(w http.ResponseWriter, r *http.Request) {
 				fmt.Sprintf("unauthorized: %s", err.Error()),
 			),
 		)
-		return
+		return nil, err
 	}
 
 	client := NewClient(ws, user)
+	s.wg.Add(1)
 
-	// Close the write channel once the read is closed.
-	defer client.Close()
+	go func() {
+		defer s.wg.Done()
 
-	// Perform logic on connection.
-	s.Connected(client)
+		for evt := range client.Events() {
+			switch e := evt.(type) {
+			case Connected:
+				s.register(e.Client)
+				s.evtCh <- evt
+			case Disconnected:
+				s.deregister(e.Client)
+				s.evtCh <- evt
+			}
+		}
+	}()
 
-	// Cleanup.
-	defer s.Disconnected(client)
-
-	// Sends the client to the listener while blocking the main loop here.
-	// This make use of messaging patterns to keep the code reusable.
-	listener := &ClientListener{
-		Client: client,
-		Chan:   make(chan *Client),
-	}
-	s.clientCh <- listener
-	<-listener.Chan
-}
-
-func (s *Socket) Connected(client *Client) {
-	s.Register(client)
-	s.evtCh <- NewRegisteredEvent(client)
+	client.Connect()
+	return client, nil
 }
 
 func (s *Socket) EventListener() chan Event {
 	return s.evtCh
 }
 
-func (s *Socket) ClientListener() chan *ClientListener {
-	return s.clientCh
-}
-
-func (s *Socket) Disconnected(client *Client) {
-	s.Deregister(client)
-	s.evtCh <- NewDeregisteredEvent(client)
-}
-
-func (s *Socket) Register(c *Client) {
+func (s *Socket) register(c *Client) {
 	s.Lock()
 	s.clients[c.ID] = c
 	s.Unlock()
 }
 
-func (s *Socket) Deregister(c *Client) {
+func (s *Socket) deregister(c *Client) {
 	s.Lock()
 	delete(s.clients, c.ID)
 	s.Unlock()

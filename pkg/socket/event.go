@@ -14,34 +14,34 @@ func getTypeName(i interface{}) string {
 	}
 }
 
-type Registered struct {
+type Connected struct {
 	TypeName string
 	Client   *Client
 }
 
-func NewRegisteredEvent(c *Client) Registered {
-	return Registered{
-		TypeName: getTypeName(new(Registered)),
+func NewConnectedEvent(c *Client) Connected {
+	return Connected{
+		TypeName: getTypeName(new(Connected)),
 		Client:   c,
 	}
 }
 
-func (e Registered) GetTypeName() string {
+func (e Connected) GetTypeName() string {
 	return e.TypeName
 }
 
-type Deregistered struct {
+type Disconnected struct {
 	TypeName string
 	Client   *Client
 }
 
-func NewDeregisteredEvent(c *Client) Deregistered {
-	return Deregistered{
-		TypeName: getTypeName(new(Deregistered)),
+func NewDisconnectedEvent(c *Client) Disconnected {
+	return Disconnected{
+		TypeName: getTypeName(new(Disconnected)),
 		Client:   c,
 	}
 }
 
-func (e Deregistered) GetTypeName() string {
+func (e Disconnected) GetTypeName() string {
 	return e.TypeName
 }
