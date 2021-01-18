@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	_ "net/http/pprof"
 	"strings"
 	"time"
 
@@ -31,6 +32,7 @@ func main() {
 	router.POST("/authenticate", newHandleAuthenticate(issuer))
 	router.POST("/authorize", authorize(issuer, handleAuthorize))
 	router.NotFound = http.FileServer(http.Dir("public"))
+	router.Handler(http.MethodGet, "/debug/pprof/*item", http.DefaultServeMux)
 
 	c := chat.New(issuer)
 	defer c.Close()
