@@ -51,6 +51,7 @@ func (s *Socket) init() {
 func (s *Socket) Close() {
 	s.once.Do(func() {
 		close(s.done)
+		close(s.evtCh)
 		s.wg.Wait()
 	})
 }
