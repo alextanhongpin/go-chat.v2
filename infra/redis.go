@@ -1,4 +1,4 @@
-package socket
+package infra
 
 import "github.com/go-redis/redis/v9"
 
@@ -8,5 +8,6 @@ func NewRedis() *redis.Client {
 		Password: "",
 		DB:       0,
 	})
+
 	return rdb
 }

@@ -9,7 +9,7 @@ import (
 	"sync"
 
 	"github.com/alextanhongpin/go-chat.v2/pkg/ticket"
-	"github.com/go-redis/redis/v8"
+	"github.com/go-redis/redis/v9"
 	"github.com/gorilla/websocket"
 )
 

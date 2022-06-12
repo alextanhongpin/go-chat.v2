@@ -8,10 +8,12 @@ import (
 	"net/http"
 	_ "net/http/pprof"
 	"strings"
+	"sync"
 	"time"
 
-	"github.com/alextanhongpin/go-chat.v2/chat"
 	"github.com/alextanhongpin/go-chat.v2/domain"
+	"github.com/alextanhongpin/go-chat.v2/infra"
+	"github.com/alextanhongpin/go-chat.v2/pkg/socketio"
 	"github.com/alextanhongpin/go-chat.v2/pkg/ticket"
 	"github.com/julienschmidt/httprouter"
 )
@@ -22,7 +24,15 @@ const (
 	port = 3000
 )
 
+type Message struct {
+	// From: user id, To: group id
+	From, To string
+	Type     string
+	Text     string
+}
+
 func main() {
+	redis := infra.NewRedis()
 	// NOTE: Separate the token for authorizing user, vs token for authorizing
 	// websocket connection.
 	// For simplicity, we use the same for both.
@@ -34,32 +44,66 @@ func main() {
 	router.NotFound = http.FileServer(http.Dir("public"))
 	router.Handler(http.MethodGet, "/debug/pprof/*item", http.DefaultServeMux)
 
-	c := chat.New(issuer)
-	defer c.Close()
+	io, close := socketio.NewIORedis[Message]("chat", redis)
+	defer close()
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+
+	go func() {
+		defer wg.Done()
+
+		// Listen to the redis pubsub server for new messages.
+		for msg := range io.Subscribe() {
+			// Send to the local server if exists.
+			io.Emit(msg.To, msg)
+			fmt.Println("subscribe:", msg)
+		}
+	}()
 
 	handleWs := func(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
-		client, err := c.Connect(w, r)
+		token := r.URL.Query().Get("token")
+		username, err := issuer.Verify(token)
 		if err != nil {
+			http.Error(w, err.Error(), http.StatusUnauthorized)
 			return
 		}
-		defer client.Close()
+		log.Printf("ws: logged in as %s\n", username)
 
-		for msg := range client.On() {
+		socket, err, close := io.Connect(w, r)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		defer close()
+
+		ctx := r.Context()
+
+		// Find the list of friends, and notify them on the online status.
+		//io.Publish(ctx, Message{
+		//Type: "presence",
+		//From: socket.ID,
+		//To: ,
+		//})
+
+		// Listen to the local client for messages.
+		for msg := range socket.Listen() {
 			switch msg.Type {
-			case chat.SendMessage:
-				msg.From = client.User
-				msg.To = client.User
-				msg.Type = "message_sent"
-				c.PublishRemote(context.Background(), msg)
+			case "text":
+				// PUblish to all redis server.
+				io.Publish(ctx, msg)
 			default:
-				log.Printf("not implemented: %v\n", msg)
+				fmt.Println("not handled", msg.Type)
+				io.Publish(ctx, msg)
 			}
 		}
 	}
+
 	router.GET("/ws", handleWs)
 
 	log.Printf("listening to port *:%d. press ctrl + c to cancel\n", port)
 	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", port), router))
+	wg.Wait()
 }
 
 func authorize(t ticket.Issuer, next httprouter.Handle) httprouter.Handle {

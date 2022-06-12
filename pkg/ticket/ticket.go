@@ -1,54 +1,63 @@
 package ticket
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/dgrijalva/jwt-go"
 )
 
+var ErrTicketExpired = errors.New("ticket: expired")
+
 type Issuer interface {
-	Issue(user string) (string, error)
+	Issue(subject string) (string, error)
 	Verify(token string) (string, error)
 }
 
 type Ticket struct {
-	secret   []byte
-	validity time.Duration
+	secret    []byte
+	expiresIn time.Duration
 }
 
-func New(secret []byte, validity time.Duration) *Ticket {
+func New(secret []byte, expiresIn time.Duration) *Ticket {
 	return &Ticket{
-		secret:   secret,
-		validity: validity,
+		secret:    secret,
+		expiresIn: expiresIn,
 	}
 }
 
-func (t *Ticket) Issue(user string) (string, error) {
+func (t *Ticket) Issue(subject string) (string, error) {
 	claims := &jwt.StandardClaims{
-		ExpiresAt: time.Now().Add(t.validity).Unix(),
-		Subject:   user,
+		ExpiresAt: time.Now().Add(t.expiresIn).Unix(),
+		Subject:   subject,
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+
 	ss, err := token.SignedString(t.secret)
-	return ss, err
+	if err != nil {
+		return "", fmt.Errorf("ticket: failed to sign string: %w", err)
+	}
+
+	return ss, nil
 }
 
 func (t *Ticket) Verify(tokenString string) (string, error) {
-	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+	token, err := jwt.ParseWithClaims(tokenString, &jwt.StandardClaims{}, func(token *jwt.Token) (interface{}, error) {
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, fmt.Errorf("Unexpected signing method: %v", token.Header["alg"])
+			return nil, fmt.Errorf("ticket: unexpected signing method: %v", token.Header["alg"])
 		}
 
 		return t.secret, nil
 	})
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("ticket: failed to parse token: %w", err)
 	}
 
-	if claims, ok := token.Claims.(jwt.MapClaims); ok && token.Valid {
-		return claims["sub"].(string), nil
+	if claims, ok := token.Claims.(*jwt.StandardClaims); ok && token.Valid {
+		return claims.Subject, nil
 	}
-	return "", err
+
+	return "", ErrTicketExpired
 }
