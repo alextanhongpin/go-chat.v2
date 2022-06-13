@@ -22,33 +22,30 @@ type authorizer interface {
 }
 
 type Chat struct {
-	redis *socketio.IORedis[Message]
-	io    *socketio.IO[Message]
-	done  chan struct{}
-	wg    sync.WaitGroup
-	evtCh chan event
-	authz authorizer
-	mu    sync.RWMutex
+	remote *socketio.IORedis[Message]
+	local  *socketio.IO[Message]
+	wg     sync.WaitGroup
+	done   chan struct{}
+	evtCh  chan event
+	authz  authorizer
+	mu     sync.RWMutex
 }
 
 func New(channel string, client *redis.Client, authz authorizer) (*Chat, func()) {
-	io, closeio := socketio.NewIO[Message]()
-	ioredis, closeredis := socketio.NewIORedis[Message](channel, client)
+	io := socketio.NewIO[Message]()
+	ioredis, close := socketio.NewIORedis[Message](channel, client)
 
 	chat := &Chat{
-		redis: ioredis,
-		io:    io,
-		done:  make(chan struct{}),
-		evtCh: make(chan event),
-		authz: authz,
+		remote: ioredis,
+		local:  io,
+		done:   make(chan struct{}),
+		evtCh:  make(chan event),
+		authz:  authz,
 	}
 
 	chat.loopAsync()
 
-	return chat, func() {
-		closeio()
-		closeredis()
-	}
+	return chat, close
 }
 
 func (c *Chat) ServeWS(w http.ResponseWriter, r *http.Request) {
@@ -61,7 +58,7 @@ func (c *Chat) ServeWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	socket, err, flush := c.io.ServeWS(w, r)
+	socket, err, flush := c.local.ServeWS(w, r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 
@@ -98,13 +95,16 @@ func (c *Chat) ServeWS(w http.ResponseWriter, r *http.Request) {
 }
 
 func (c *Chat) loop() {
+	ch, stop := c.remote.Subscribe()
+	defer stop()
+
 	for {
 		select {
 		case <-c.done:
 			return
 		case evt := <-c.evtCh:
 			c.eventProcessor(evt)
-		case msg := <-c.redis.Subscribe():
+		case msg := <-ch:
 			c.emitLocal(msg)
 		}
 	}
@@ -132,15 +132,15 @@ func (c *Chat) eventProcessor(evt event) {
 }
 
 func (c *Chat) addSession(username, sessionID string) error {
-	return c.redis.Client.SAdd(context.Background(), username, []string{sessionID}).Err()
+	return c.remote.Client.SAdd(context.Background(), username, []string{sessionID}).Err()
 }
 
 func (c *Chat) removeSession(username, sessionID string) error {
-	return c.redis.Client.SRem(context.Background(), username, []string{sessionID}).Err()
+	return c.remote.Client.SRem(context.Background(), username, []string{sessionID}).Err()
 }
 
 func (c *Chat) getSessions(username string) ([]string, error) {
-	return c.redis.Client.SMembers(context.Background(), username).Result()
+	return c.remote.Client.SMembers(context.Background(), username).Result()
 }
 
 func (c *Chat) fetchFriends(username string) {
@@ -206,19 +206,19 @@ func (c *Chat) isUserOnline(username string) bool {
 }
 
 func (c *Chat) emitError(sessionID string, err error) bool {
-	return c.io.Error(sessionID, err)
+	return c.local.Error(sessionID, err)
 }
 
 func (c *Chat) emitLocal(msg Message) bool {
 	sessionIDs, _ := c.getSessions(msg.To)
 
 	for _, sid := range sessionIDs {
-		c.io.EmitAny(sid, msg)
+		c.local.EmitAny(sid, msg)
 	}
 
 	return true
 }
 
 func (c *Chat) emitRemote(msg any) error {
-	return c.redis.Publish(context.Background(), msg)
+	return c.remote.Publish(context.Background(), msg)
 }

@@ -15,30 +15,19 @@ const (
 
 type IO[T any] struct {
 	websocket.Upgrader
-	SocketFunc   func(s *Socket[T]) error
-	mu           sync.RWMutex
-	wg           sync.WaitGroup
-	quit         sync.Once
-	done         chan struct{}
-	registerCh   chan *Socket[T]
-	unregisterCh chan *Socket[T]
-	sockets      map[string]*Socket[T]
+	SocketFunc func(s *Socket[T]) error
+	mu         sync.RWMutex
+	sockets    map[string]*Socket[T]
 }
 
-func NewIO[T any]() (*IO[T], func()) {
-	io := &IO[T]{
+func NewIO[T any]() *IO[T] {
+	return &IO[T]{
 		Upgrader: websocket.Upgrader{
 			ReadBufferSize:  readBufferSize,
 			WriteBufferSize: writeBufferSize,
 		},
-		done:         make(chan struct{}),
-		registerCh:   make(chan *Socket[T]),
-		unregisterCh: make(chan *Socket[T]),
-		sockets:      make(map[string]*Socket[T]),
+		sockets: make(map[string]*Socket[T]),
 	}
-	io.loopAsync()
-
-	return io, io.close
 }
 
 func (io *IO[T]) ServeWS(w http.ResponseWriter, r *http.Request) (*Socket[T], error, func()) {
@@ -52,10 +41,10 @@ func (io *IO[T]) ServeWS(w http.ResponseWriter, r *http.Request) (*Socket[T], er
 		io.SocketFunc(socket)
 	}
 
-	io.registerCh <- socket
+	io.register(socket)
 
 	return socket, nil, func() {
-		io.unregisterCh <- socket
+		io.deregister(socket)
 	}
 }
 
@@ -98,13 +87,14 @@ func (io *IO[T]) EmitAny(socketID string, msg any) bool {
 func (io *IO[T]) BroadcastAny(msg any) (total int, sent int) {
 	io.mu.Lock()
 	total = len(io.sockets)
+	sockets := io.sockets
+	io.mu.Unlock()
 
-	for _, socket := range io.sockets {
+	for _, socket := range sockets {
 		if socket.EmitAny(msg) {
 			sent++
 		}
 	}
-	io.mu.Unlock()
 
 	return
 }
@@ -112,58 +102,32 @@ func (io *IO[T]) BroadcastAny(msg any) (total int, sent int) {
 func (io *IO[T]) Broadcast(msg T) (total int, sent int) {
 	io.mu.Lock()
 	total = len(io.sockets)
+	sockets := io.sockets
+	io.mu.Unlock()
 
-	for _, socket := range io.sockets {
+	for _, socket := range sockets {
 		if socket.Emit(msg) {
 			sent++
 		}
 	}
-	io.mu.Unlock()
 
 	return
 }
 
-func (io *IO[T]) close() {
-	io.quit.Do(func() {
-		close(io.done)
-		io.wg.Wait()
-	})
+func (io *IO[T]) register(socket *Socket[T]) {
+	io.mu.Lock()
+	io.sockets[socket.ID] = socket
+	io.mu.Unlock()
 }
 
-func (io *IO[T]) loop() {
-	defer func() {
-		close(io.registerCh)
-		close(io.unregisterCh)
-	}()
+func (io *IO[T]) deregister(socket *Socket[T]) {
+	io.mu.Lock()
 
-	for {
-		select {
-		case <-io.done:
-			return
-		case socket := <-io.registerCh:
-			io.mu.Lock()
-			io.sockets[socket.ID] = socket
-			io.mu.Unlock()
-		case socket := <-io.unregisterCh:
-			io.mu.Lock()
-
-			socket, ok := io.sockets[socket.ID]
-			if ok {
-				socket.close()
-				delete(io.sockets, socket.ID)
-			}
-
-			io.mu.Unlock()
-		}
+	socket, ok := io.sockets[socket.ID]
+	if ok {
+		socket.close()
+		delete(io.sockets, socket.ID)
 	}
-}
 
-func (io *IO[T]) loopAsync() {
-	io.wg.Add(1)
-
-	go func() {
-		defer io.wg.Done()
-
-		io.loop()
-	}()
+	io.mu.Unlock()
 }

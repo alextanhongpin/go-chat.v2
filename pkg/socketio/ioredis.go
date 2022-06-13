@@ -15,7 +15,6 @@ type IORedis[T any] struct {
 	wg      sync.WaitGroup
 	channel string
 	done    chan struct{}
-	readCh  chan T
 	quit    sync.Once
 }
 
@@ -24,7 +23,6 @@ func NewIORedis[T any](channel string, client *redis.Client) (*IORedis[T], func(
 		Client:  client,
 		channel: channel,
 		done:    make(chan struct{}),
-		readCh:  make(chan T),
 	}
 	io.subscribeAsync()
 
@@ -44,8 +42,18 @@ func (io *IORedis[T]) Publish(ctx context.Context, msg any) error {
 	return nil
 }
 
-func (io *IORedis[T]) Subscribe() <-chan T {
-	return io.readCh
+func (io *IORedis[T]) Subscribe() (<-chan T, func()) {
+	ch := io.subscribeAsync()
+
+	var once sync.Once
+
+	close := func() {
+		once.Do(func() {
+			close(ch)
+		})
+	}
+
+	return ch, close
 }
 
 func (io *IORedis[T]) close() {
@@ -55,19 +63,21 @@ func (io *IORedis[T]) close() {
 	})
 }
 
-func (io *IORedis[T]) subscribeAsync() {
+func (io *IORedis[T]) subscribeAsync() chan T {
+	ch := make(chan T)
+
 	io.wg.Add(1)
 
 	go func() {
 		defer io.wg.Done()
 
-		io.subscribe()
+		io.subscribe(ch)
 	}()
+
+	return ch
 }
 
-func (io *IORedis[T]) subscribe() {
-	defer close(io.readCh)
-
+func (io *IORedis[T]) subscribe(ch chan<- T) {
 	ctx := context.Background()
 
 	pubsub := io.Client.Subscribe(ctx, io.channel)
@@ -88,7 +98,7 @@ func (io *IORedis[T]) subscribe() {
 			select {
 			case <-io.done:
 				return
-			case io.readCh <- msg:
+			case ch <- msg:
 			}
 		}
 	}
