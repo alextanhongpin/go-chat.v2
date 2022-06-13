@@ -10,11 +10,6 @@ import (
 
 var ErrTicketExpired = errors.New("ticket: expired")
 
-type Issuer interface {
-	Issue(subject string) (string, error)
-	Verify(token string) (string, error)
-}
-
 type Ticket struct {
 	secret    []byte
 	expiresIn time.Duration

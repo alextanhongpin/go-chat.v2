@@ -1,6 +1,6 @@
 import Service from "./service.js";
 
-const $ = el => document.getElementById(el);
+const $ = (el) => document.getElementById(el);
 
 async function onload() {
   let friends = [];
@@ -23,8 +23,8 @@ async function onload() {
   socket.onclose = onClose;
   socket.onmessage = onMessage;
 
-  function send(type, payload) {
-    socket.send(JSON.stringify({ type, payload }));
+  function send(type, { text, presence } = {}) {
+    socket.send(JSON.stringify({ type, text, presence }));
   }
 
   function onClose(evt) {
@@ -37,22 +37,22 @@ async function onload() {
   }
 
   const eventHandlers = {
-    presence_notified: presenceNotified,
-    message_sent: messageSent,
-    friends_fetched: friendsFetched
+    presence: presenceNotified,
+    text: messageSent,
+    friends: friendsFetched,
   };
 
-  function messageSent(payload) {
+  function messageSent({ type, text }) {
     $("output").innerText += "\n";
-    $("output").innerText += payload.msg;
+    $("output").innerText += text;
   }
 
-  function presenceNotified({ username, online }) {
-    friends = friends.map(friend =>
-      friend.username === username
+  function presenceNotified({ from, presence }) {
+    friends = friends.map((friend) =>
+      friend.username === from
         ? {
-            username,
-            online
+            username: from,
+            online: presence,
           }
         : friend
     );
@@ -76,16 +76,17 @@ async function onload() {
     if (!handler) {
       throw new Error(`not implemented: ${event.type}`);
     }
-    return handler(event.payload);
+
+    return handler(event);
   }
 
   $("chat").addEventListener(
     "keyup",
-    evt => {
+    (evt) => {
       const isEnter = evt.which === 13;
       const message = $("chat").value;
       if (isEnter && message) {
-        send("send_message", { msg: message });
+        send("text", { text: message });
         $("chat").value = "";
       }
     },
@@ -97,7 +98,7 @@ async function onload() {
     () => {
       const message = $("chat").value;
       if (message) {
-        send("send_message", { msg: message });
+        send("text", { text: message });
         $("chat").value = "";
       }
     },

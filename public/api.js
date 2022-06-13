@@ -2,8 +2,8 @@ export async function authenticate(username) {
   const body = await window.fetch("/authenticate", {
     method: "POST",
     body: JSON.stringify({
-      username
-    })
+      username,
+    }),
   });
 
   const response = await body.json();
@@ -19,9 +19,10 @@ export async function authorize() {
   const body = await window.fetch("/authorize", {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${accessToken}`
-    }
+      Authorization: `Bearer ${accessToken}`,
+    },
   });
+
   const response = await body.json();
   return response.username;
 }

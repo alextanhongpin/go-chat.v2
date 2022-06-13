@@ -44,14 +44,13 @@ func NewIO[T any]() (*IO[T], func()) {
 func (io *IO[T]) Connect(w http.ResponseWriter, r *http.Request) (*Socket[T], error, func()) {
 	ws, err := io.Upgrade(w, r, nil)
 	if err != nil {
-		return nil, err, nil
+		return nil, fmt.Errorf("io: failed to upgrade websocket connection: %w", err), nil
 	}
 
 	socket, close := NewSocket[T](ws)
 	if io.SocketFunc != nil {
 		io.SocketFunc(socket)
 	}
-	fmt.Println("io: connect", socket)
 
 	io.registerCh <- socket
 
@@ -59,8 +58,8 @@ func (io *IO[T]) Connect(w http.ResponseWriter, r *http.Request) (*Socket[T], er
 
 	return socket, nil, func() {
 		once.Do(func() {
-			io.unregisterCh <- socket
 			close()
+			io.unregisterCh <- socket
 		})
 	}
 }
@@ -125,18 +124,15 @@ func (io *IO[T]) close() {
 }
 
 func (io *IO[T]) loop() {
-	fmt.Println("io: init loop")
 	for {
 		select {
 		case <-io.done:
 			return
 		case socket := <-io.registerCh:
-			fmt.Println("io: register socket", socket)
 			io.mu.Lock()
 			io.sockets[socket.ID] = socket
 			io.mu.Unlock()
 		case socket := <-io.unregisterCh:
-			fmt.Println("io: unregister socket", socket)
 			io.mu.Lock()
 			delete(io.sockets, socket.ID)
 			io.mu.Unlock()

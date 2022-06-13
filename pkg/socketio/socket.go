@@ -1,7 +1,6 @@
 package socketio
 
 import (
-	"fmt"
 	"log"
 	"sync"
 	"time"
@@ -24,6 +23,15 @@ const (
 	maxMessageSize = 512
 )
 
+type SocketError struct {
+	Code    int
+	Message string
+}
+
+func (s *SocketError) Error() string {
+	return s.Message
+}
+
 type Socket[T any] struct {
 	ID             string
 	WriteTimeout   time.Duration
@@ -35,6 +43,7 @@ type Socket[T any] struct {
 	done    chan struct{}
 	quit    sync.Once
 	wg      sync.WaitGroup
+	errCh   chan *SocketError
 	readCh  chan T
 	writeCh chan any
 }
@@ -49,6 +58,7 @@ func NewSocket[T any](conn *websocket.Conn) (*Socket[T], func()) {
 
 		conn:    conn,
 		done:    make(chan struct{}),
+		errCh:   make(chan *SocketError),
 		readCh:  make(chan T),
 		writeCh: make(chan any),
 	}
@@ -57,7 +67,6 @@ func NewSocket[T any](conn *websocket.Conn) (*Socket[T], func()) {
 	go func() {
 		defer socket.wg.Done()
 
-		fmt.Println("socket: init writer")
 		socket.writer()
 	}()
 
@@ -66,7 +75,6 @@ func NewSocket[T any](conn *websocket.Conn) (*Socket[T], func()) {
 	go func() {
 		defer socket.wg.Done()
 
-		fmt.Println("socket: init reader at listen")
 		socket.reader()
 	}()
 
@@ -92,25 +100,40 @@ func (s *Socket[T]) EmitAny(msg any) bool {
 }
 
 func (s *Socket[T]) Listen() <-chan T {
-
 	return s.readCh
 }
 
 func (s *Socket[T]) close() {
 	s.quit.Do(func() {
+		close(s.readCh)
+		close(s.writeCh)
 		close(s.done)
 		s.wg.Wait()
 		s.conn.Close()
 	})
 }
 
+func (s *Socket[T]) Error(err *SocketError) {
+	select {
+	case <-s.done:
+		return
+	case s.errCh <- err:
+	}
+}
+
 func (s *Socket[T]) writer() {
+	defer s.conn.Close()
+
 	pinger := time.NewTicker(s.PingTimeout)
 	defer pinger.Stop()
 
 	for {
 		select {
 		case <-s.done:
+			_ = s.conn.WriteMessage(websocket.CloseMessage, []byte{})
+			return
+		case err := <-s.errCh:
+			s.conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(err.Code, err.Error()))
 			return
 		case msg, open := <-s.writeCh:
 			if !open {
@@ -118,17 +141,16 @@ func (s *Socket[T]) writer() {
 
 				return
 			}
-			fmt.Println("socket: writing", msg)
 
 			_ = s.conn.SetWriteDeadline(time.Now().Add(s.WriteTimeout))
 			if err := s.conn.WriteJSON(msg); err != nil {
+				log.Printf("socket: failed to write json: %+v: %w\n", msg, err)
 				_ = s.conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseInternalServerErr, err.Error()))
 
 				return
 			}
 
 		case <-pinger.C:
-			fmt.Println("socket: ping")
 			_ = s.conn.SetWriteDeadline(time.Now().Add(s.WriteTimeout))
 
 			if err := s.conn.WriteMessage(websocket.PingMessage, []byte{}); err != nil {
@@ -139,6 +161,8 @@ func (s *Socket[T]) writer() {
 }
 
 func (s *Socket[T]) reader() {
+	defer s.conn.Close()
+
 	for {
 		s.conn.SetReadLimit(s.MaxMessageSize)
 		_ = s.conn.SetReadDeadline(time.Now().Add(s.PongTimeout))
@@ -154,7 +178,6 @@ func (s *Socket[T]) reader() {
 
 			return
 		}
-		fmt.Println("socket: read", msg)
 
 		select {
 		case <-s.done:
