@@ -1,7 +1,6 @@
 package socketio
 
 import (
-	"log"
 	"sync"
 	"time"
 
@@ -101,40 +100,34 @@ func (s *Socket[T]) close() {
 	})
 }
 
-func (s *Socket[T]) Error(err *SocketError) {
+func (s *Socket[T]) Error(err *SocketError) bool {
 	select {
 	case <-s.done:
-		return
+		return false
 	case s.errCh <- err:
+		return true
 	}
 }
 
 func (s *Socket[T]) writer() {
-	defer close(s.writeCh)
-	defer close(s.errCh)
-
 	pinger := time.NewTicker(s.PingTimeout)
 	defer pinger.Stop()
 
 	for {
 		select {
 		case <-s.done:
-			_ = s.conn.WriteMessage(websocket.CloseMessage, []byte{})
+			writeClose(s.conn)
+
 			return
 		case err := <-s.errCh:
-			s.conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(err.Code, err.Error()))
+			writeError(s.conn, err.Code, err)
+
 			return
-		case msg, open := <-s.writeCh:
-			if !open {
-				_ = s.conn.WriteMessage(websocket.CloseMessage, []byte{})
-
-				return
-			}
-
+		case msg := <-s.writeCh:
 			_ = s.conn.SetWriteDeadline(time.Now().Add(s.WriteTimeout))
+
 			if err := s.conn.WriteJSON(msg); err != nil {
-				log.Printf("socket: failed to write json: %+v: %s\n", msg, err)
-				_ = s.conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseInternalServerErr, err.Error()))
+				writeError(s.conn, websocket.CloseInternalServerErr, err)
 
 				return
 			}
@@ -142,7 +135,7 @@ func (s *Socket[T]) writer() {
 		case <-pinger.C:
 			_ = s.conn.SetWriteDeadline(time.Now().Add(s.WriteTimeout))
 
-			if err := s.conn.WriteMessage(websocket.PingMessage, []byte{}); err != nil {
+			if err := writePing(s.conn); err != nil {
 				return
 			}
 		}
@@ -153,18 +146,14 @@ func (s *Socket[T]) reader() {
 	defer close(s.readCh)
 
 	for {
-		s.conn.SetReadLimit(s.MaxMessageSize)
 		_ = s.conn.SetReadDeadline(time.Now().Add(s.PongTimeout))
+		s.conn.SetReadLimit(s.MaxMessageSize)
 		s.conn.SetPongHandler(func(string) error {
 			return s.conn.SetReadDeadline(time.Now().Add(s.PongTimeout))
 		})
 
 		var msg T
 		if err := s.conn.ReadJSON(&msg); err != nil {
-			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-				log.Printf("socket: %s\n", err)
-			}
-
 			return
 		}
 

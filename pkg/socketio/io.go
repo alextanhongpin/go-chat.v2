@@ -41,7 +41,7 @@ func NewIO[T any]() (*IO[T], func()) {
 	return io, io.close
 }
 
-func (io *IO[T]) Connect(w http.ResponseWriter, r *http.Request) (*Socket[T], error, func()) {
+func (io *IO[T]) ServeWS(w http.ResponseWriter, r *http.Request) (*Socket[T], error, func()) {
 	ws, err := io.Upgrade(w, r, nil)
 	if err != nil {
 		return nil, fmt.Errorf("io: failed to upgrade websocket connection: %w", err), nil
@@ -57,6 +57,18 @@ func (io *IO[T]) Connect(w http.ResponseWriter, r *http.Request) (*Socket[T], er
 	return socket, nil, func() {
 		io.unregisterCh <- socket
 	}
+}
+
+func (io *IO[T]) Error(socketID string, err error) bool {
+	io.mu.RLock()
+	socket, ok := io.sockets[socketID]
+	io.mu.RUnlock()
+
+	if !ok {
+		return ok
+	}
+
+	return socket.Error(NewError(err.Error()))
 }
 
 func (io *IO[T]) Emit(socketID string, msg T) bool {
@@ -134,11 +146,13 @@ func (io *IO[T]) loop() {
 			io.mu.Unlock()
 		case socket := <-io.unregisterCh:
 			io.mu.Lock()
+
 			socket, ok := io.sockets[socket.ID]
 			if ok {
 				socket.close()
 				delete(io.sockets, socket.ID)
 			}
+
 			io.mu.Unlock()
 		}
 	}

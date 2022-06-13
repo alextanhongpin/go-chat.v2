@@ -12,8 +12,8 @@ import (
 
 type IORedis[T any] struct {
 	Client  *redis.Client
-	channel string
 	wg      sync.WaitGroup
+	channel string
 	done    chan struct{}
 	readCh  chan T
 	quit    sync.Once
@@ -69,6 +69,7 @@ func (io *IORedis[T]) subscribe() {
 	defer close(io.readCh)
 
 	ctx := context.Background()
+
 	pubsub := io.Client.Subscribe(ctx, io.channel)
 	defer pubsub.Close()
 
