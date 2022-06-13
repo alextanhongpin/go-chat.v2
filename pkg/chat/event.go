@@ -9,7 +9,13 @@ type Event struct{}
 type Connected struct {
 	username  string
 	sessionID string
-	online    bool
 }
 
 func (Connected) isEvent() {}
+
+type Disconnected struct {
+	username  string
+	sessionID string
+}
+
+func (Disconnected) isEvent() {}

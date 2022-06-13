@@ -23,15 +23,6 @@ const (
 	maxMessageSize = 512
 )
 
-type SocketError struct {
-	Code    int
-	Message string
-}
-
-func (s *SocketError) Error() string {
-	return s.Message
-}
-
 type Socket[T any] struct {
 	ID             string
 	WriteTimeout   time.Duration
@@ -71,7 +62,6 @@ func NewSocket[T any](conn *websocket.Conn) (*Socket[T], func()) {
 	}()
 
 	socket.wg.Add(1)
-
 	go func() {
 		defer socket.wg.Done()
 
@@ -105,8 +95,6 @@ func (s *Socket[T]) Listen() <-chan T {
 
 func (s *Socket[T]) close() {
 	s.quit.Do(func() {
-		close(s.readCh)
-		close(s.writeCh)
 		close(s.done)
 		s.wg.Wait()
 		s.conn.Close()
@@ -122,7 +110,8 @@ func (s *Socket[T]) Error(err *SocketError) {
 }
 
 func (s *Socket[T]) writer() {
-	defer s.conn.Close()
+	defer close(s.writeCh)
+	defer close(s.errCh)
 
 	pinger := time.NewTicker(s.PingTimeout)
 	defer pinger.Stop()
@@ -144,7 +133,7 @@ func (s *Socket[T]) writer() {
 
 			_ = s.conn.SetWriteDeadline(time.Now().Add(s.WriteTimeout))
 			if err := s.conn.WriteJSON(msg); err != nil {
-				log.Printf("socket: failed to write json: %+v: %w\n", msg, err)
+				log.Printf("socket: failed to write json: %+v: %s\n", msg, err)
 				_ = s.conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseInternalServerErr, err.Error()))
 
 				return
@@ -161,7 +150,7 @@ func (s *Socket[T]) writer() {
 }
 
 func (s *Socket[T]) reader() {
-	defer s.conn.Close()
+	defer close(s.readCh)
 
 	for {
 		s.conn.SetReadLimit(s.MaxMessageSize)

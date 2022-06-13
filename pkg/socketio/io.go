@@ -47,20 +47,15 @@ func (io *IO[T]) Connect(w http.ResponseWriter, r *http.Request) (*Socket[T], er
 		return nil, fmt.Errorf("io: failed to upgrade websocket connection: %w", err), nil
 	}
 
-	socket, close := NewSocket[T](ws)
+	socket, _ := NewSocket[T](ws)
 	if io.SocketFunc != nil {
 		io.SocketFunc(socket)
 	}
 
 	io.registerCh <- socket
 
-	var once sync.Once
-
 	return socket, nil, func() {
-		once.Do(func() {
-			close()
-			io.unregisterCh <- socket
-		})
+		io.unregisterCh <- socket
 	}
 }
 
@@ -124,6 +119,11 @@ func (io *IO[T]) close() {
 }
 
 func (io *IO[T]) loop() {
+	defer func() {
+		close(io.registerCh)
+		close(io.unregisterCh)
+	}()
+
 	for {
 		select {
 		case <-io.done:
@@ -134,7 +134,11 @@ func (io *IO[T]) loop() {
 			io.mu.Unlock()
 		case socket := <-io.unregisterCh:
 			io.mu.Lock()
-			delete(io.sockets, socket.ID)
+			socket, ok := io.sockets[socket.ID]
+			if ok {
+				socket.close()
+				delete(io.sockets, socket.ID)
+			}
 			io.mu.Unlock()
 		}
 	}

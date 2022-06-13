@@ -66,6 +66,8 @@ func (io *IORedis[T]) subscribeAsync() {
 }
 
 func (io *IORedis[T]) subscribe() {
+	defer close(io.readCh)
+
 	ctx := context.Background()
 	pubsub := io.Client.Subscribe(ctx, io.channel)
 	defer pubsub.Close()
@@ -75,7 +77,6 @@ func (io *IORedis[T]) subscribe() {
 		case <-io.done:
 			return
 		case data := <-pubsub.Channel():
-			fmt.Println("ioredis: received", data)
 			var msg T
 			if err := json.Unmarshal([]byte(data.Payload), &msg); err != nil {
 				log.Printf("ioredis: unmarshal error: %s\n", err)
@@ -85,7 +86,6 @@ func (io *IORedis[T]) subscribe() {
 
 			select {
 			case <-io.done:
-				fmt.Println("ioredis: closed")
 				return
 			case io.readCh <- msg:
 			}

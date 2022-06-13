@@ -75,15 +75,12 @@ func (c *Chat[T]) ServeWS(w http.ResponseWriter, r *http.Request) {
 	c.evtCh <- Connected{
 		username:  username,
 		sessionID: socket.ID,
-		online:    true,
 	}
 
 	defer func() {
-		fmt.Println("chat: disconnecting")
-		c.evtCh <- Connected{
+		c.evtCh <- Disconnected{
 			username:  username,
 			sessionID: socket.ID,
-			online:    false,
 		}
 	}()
 
@@ -94,8 +91,6 @@ func (c *Chat[T]) ServeWS(w http.ResponseWriter, r *http.Request) {
 		}
 		m.From = username
 
-		fmt.Printf("chat: listen: %+v\n", msg)
-
 		users, _ := friends[username]
 		for _, user := range users {
 			msg := m
@@ -105,7 +100,6 @@ func (c *Chat[T]) ServeWS(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	fmt.Println("chat: closing")
 }
 
 func (c *Chat[T]) loop() {
@@ -114,11 +108,9 @@ func (c *Chat[T]) loop() {
 		case <-c.done:
 			break
 		case evt := <-c.evtCh:
-			fmt.Println("chat: evtCh", evt)
 			c.eventProcessor(evt)
 			// Read the remote redis and publish to all local nodes.
 		case msg := <-c.redis.Subscribe():
-			fmt.Println("chat: redis sub", msg)
 			switch m := any(msg).(type) {
 			case Message:
 				c.emitLocal(m)
@@ -143,11 +135,9 @@ func (c *Chat[T]) loopAsync() {
 func (c *Chat[T]) eventProcessor(evt event) {
 	switch e := evt.(type) {
 	case Connected:
-		if e.online {
-			c.connected(e)
-		} else {
-			c.disconnected(e)
-		}
+		c.connected(e)
+	case Disconnected:
+		c.disconnected(e)
 	default:
 		panic("not handled")
 	}
@@ -208,8 +198,7 @@ func (c *Chat[T]) connected(evt Connected) {
 	c.notifyPresence(evt.username, true)
 }
 
-func (c *Chat[T]) disconnected(evt Connected) {
-	fmt.Println("chat: disconnected", evt)
+func (c *Chat[T]) disconnected(evt Disconnected) {
 	uid := UserID(evt.username)
 	sid := SessionID(evt.sessionID)
 
