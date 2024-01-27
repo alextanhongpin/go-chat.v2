@@ -7,7 +7,7 @@ import (
 	"sync"
 
 	"github.com/alextanhongpin/go-chat.v2/pkg/socketio"
-	"github.com/go-redis/redis/v9"
+	"github.com/redis/go-redis/v9"
 )
 
 var friends = map[string][]string{

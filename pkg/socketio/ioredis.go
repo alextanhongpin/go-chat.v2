@@ -7,7 +7,7 @@ import (
 	"log"
 	"sync"
 
-	"github.com/go-redis/redis/v9"
+	"github.com/redis/go-redis/v9"
 )
 
 type IORedis[T any] struct {
@@ -87,7 +87,11 @@ func (io *IORedis[T]) subscribe(ch chan<- T) {
 		select {
 		case <-io.done:
 			return
-		case data := <-pubsub.Channel():
+		case data, ok := <-pubsub.Channel():
+			if !ok {
+				log.Printf("ioredis: channel closed\n")
+			}
+
 			var msg T
 			if err := json.Unmarshal([]byte(data.Payload), &msg); err != nil {
 				log.Printf("ioredis: unmarshal error: %s\n", err)
